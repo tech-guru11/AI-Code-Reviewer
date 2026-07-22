@@ -1,0 +1,14 @@
+# Python virtual environment
+venv/
+*.pyc
+__pycache__/
+
+# Local database (SQLite)
+db.sqlite3
+
+# Environment variables & Secret keys
+.env
+
+# Static & Media uploads
+/static/
+/media/
