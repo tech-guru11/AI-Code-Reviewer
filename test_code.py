@@ -21,3 +21,6 @@ def hello():
     print("new change")
 def test_function():
     print("new commit test")
+def search_user(username):
+    query = "SELECT * FROM users WHERE username='" + username + "'"
+    return query
