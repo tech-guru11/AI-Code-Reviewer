@@ -17,3 +17,5 @@ def get_user(user_id):
     return query
 def test_function():
     print("hello")
+def hello():
+    print("new change")
