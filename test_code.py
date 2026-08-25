@@ -19,3 +19,5 @@ def test_function():
     print("hello")
 def hello():
     print("new change")
+def test_function():
+    print("new commit test")
