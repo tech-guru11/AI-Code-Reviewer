@@ -24,3 +24,6 @@ def test_function():
 def search_user(username):
     query = "SELECT * FROM users WHERE username='" + username + "'"
     return query
+def search_user(username):
+    query = " * FROM users WHERE username='" + username + "'"
+    return query
