@@ -47,3 +47,13 @@ class ReviewListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Review
         fields = ['id', 'pull_request', 'pull_request_title', 'status', 'score', 'created_at']
+
+
+
+class PullRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PullRequest
+        fields = "__all__"
+
+
+
