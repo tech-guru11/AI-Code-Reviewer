@@ -29,7 +29,7 @@ def search_user(username):
     return query
 def test_function():
     print("new commit test")
-def search_use):
+def search_user(username):
     query = "SELECT * FROM users WHERE username='" + username + "'"
     return query
 def search_user(username):
