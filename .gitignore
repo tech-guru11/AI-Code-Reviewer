@@ -20,3 +20,6 @@ db.sqlite3
 
 # Redis persistence
 dump.rdb
+
+# Redis persistence
+dump.rdb
