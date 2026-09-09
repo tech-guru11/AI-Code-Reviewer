@@ -14,3 +14,9 @@ db.sqlite3
 /media/
 # Local private keys
 *.pem
+
+# Redis persistence
+ dump.rdb
+
+# Redis persistence
+dump.rdb
