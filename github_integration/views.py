@@ -2,12 +2,9 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-
-from reviews.models import Repository
 from reviews.serializers import RepositorySerializer, SyncRepositorySerializer
 from .github_service import sync_repository_to_db
 from .tasks import process_github_event 
-
 
 import json
 import hmac
@@ -16,9 +13,8 @@ from django.http import JsonResponse, HttpResponseForbidden
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django.conf import settings
-from reviews.models import Repository, PullRequest
-from .github_service import sync_pull_request_files, sync_pull_request_commits, sync_pull_requests_to_db, GitHubAppService
-
+import logging
+logger = logging.getLogger(__name__)
 
 class SyncRepositoryView(APIView):
     permission_classes = [IsAuthenticated]
@@ -28,15 +24,21 @@ class SyncRepositoryView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        repo_name = serializer.validated_data["repo_name"]
+        repo_full_name = serializer.validated_data["repo_full_name"]
 
         try:
-            repo = sync_repository_to_db(repo_name=repo_name, user=request.user)
+            repo = sync_repository_to_db(repo_full_name=repo_full_name, user=request.user)
             response_serializer = RepositorySerializer(repo)
             return Response(response_serializer.data, status=status.HTTP_200_OK)
-        except Exception as e:
+        except Exception:
+            logger.exception(
+                "Failed to sync repository '%s' for user '%s'.",
+                repo_full_name,
+                request.user.username,
+            )
+
             return Response(
-                {"error": f"Failed to sync repository: {str(e)}"},
+                {"error": "Failed to sync repository. Please try again."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -54,8 +56,12 @@ def verify_github_signature(request_body, header_signature):
         return False
 
     # GitHub sends the signature as 'sha256=<hex_digest>'
-    sha_name, signature = header_signature.split('=')
-    if sha_name != 'sha256':
+    try:
+        sha_name, signature = header_signature.split("=", 1)
+    except ValueError:
+        return False
+
+    if sha_name != "sha256" or not signature:
         return False
 
     # Compute our own HMAC using the raw request body and our secret

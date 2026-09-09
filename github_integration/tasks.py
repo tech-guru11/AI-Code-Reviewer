@@ -1,5 +1,7 @@
 import os
 import json
+import logging
+
 from celery import shared_task
 from openai import OpenAI, files
 from django.utils import timezone
@@ -13,6 +15,7 @@ from .github_service import (
     sync_single_pull_request_to_db,
 )
 
+logger = logging.getLogger(__name__)
 # Initialize the Groq client
 client = OpenAI(
     base_url="https://api.groq.com/openai/v1",
@@ -27,7 +30,7 @@ def process_github_event(event_type, payload):
     """
 
     if event_type != "pull_request":
-        print(f"Ignoring GitHub event: {event_type}")
+        logger.info(f"Ignoring GitHub event: {event_type}")
 
         return {
             "status": "ignored",
@@ -44,11 +47,11 @@ def process_github_event(event_type, payload):
 
     repo_full_name = repo_data.get("full_name")
     pr_number = pr_data.get("number")
-    print(
+    logger.info(
     f"Commit SHA: {commit_sha}"
 )
 
-    print(
+    logger.info(
         f"GitHub Pull Request event received: "
         f"PR #{pr_number}, action={action}, "
         f"repository={repo_full_name}"
@@ -56,7 +59,7 @@ def process_github_event(event_type, payload):
 
     # Only review these PR actions
     if action not in ["opened", "synchronize", "reopened"]:
-        print(
+        logger.info(
             f"Ignoring pull_request action: {action}"
         )
 
@@ -72,7 +75,7 @@ def process_github_event(event_type, payload):
              github_url=f"https://github.com/{repo_full_name}"
     )
 
-        print(
+        logger.info(
             f"Repository found in database: "
             f"{repository.name}"
         )
@@ -81,7 +84,7 @@ def process_github_event(event_type, payload):
             pr_number,
         )
 
-        print(
+        logger.info(
             f"Django PullRequest synchronized: "
             f"ID={pull_request.id}"
         )
@@ -93,7 +96,7 @@ def process_github_event(event_type, payload):
         ).first()
 
         if existing_review:
-            print(
+            logger.info(
                 f"Review already exists for commit "
                 f"{commit_sha}. Skipping duplicate review."
             )
@@ -115,7 +118,7 @@ def process_github_event(event_type, payload):
             commit_sha
         )
 
-        print(
+        logger.info(
             f"Manual AI review queued. "
             f"Celery task ID: {task.id}"
         )
@@ -129,15 +132,14 @@ def process_github_event(event_type, payload):
             "task_id": task.id,
         }
 
-    except Exception as e:
-        print(
-            f"[ERROR] Failed processing GitHub "
-            f"pull_request event: {e}"
+    except Exception:
+        logger.exception(
+            "Failed processing GitHub pull_request event."
         )
 
         return {
             "status": "failed",
-            "error": str(e),
+            "error": "Failed to process GitHub pull request event.",
         }
 @shared_task
 def process_manual_review(
@@ -145,7 +147,7 @@ def process_manual_review(
     commit_sha=None,
     review_id=None,
 ):
-    print(
+    logger.info(
         f"Starting manual review for PullRequest ID: {pull_request_id}"
     )
 
@@ -165,7 +167,7 @@ def process_manual_review(
                 pull_request=pull_request,
             )
 
-            print(
+            logger.info(
                 f"Using existing Review ID: {review.id}"
             )
 
@@ -182,7 +184,7 @@ def process_manual_review(
                 ).first()
 
                 if existing_review:
-                    print(
+                    logger.info(
                         f"Review already exists for commit {commit_sha}"
                     )
 
@@ -200,14 +202,14 @@ def process_manual_review(
                 started_at=timezone.now(),
             )
 
-            print(
+            logger.info(
                 f"Created new Review ID: {review.id}"
             )
 
         repository = pull_request.repository
 
-        print(f"Repository: {repository.name}")
-        print(
+        logger.info(f"Repository: {repository.name}")
+        logger.info(
             f"GitHub PR Number: {pull_request.github_pr_number}"
         )
 
@@ -221,14 +223,14 @@ def process_manual_review(
             .rstrip("/")
         )
 
-        print(
+        logger.info(
             f"Connecting to GitHub repository: {repo_full_name}"
         )
 
         try:
             github_repo = github_client.get_repo(repo_full_name)
 
-            print(
+            logger.info(
                 f"Connected to GitHub repository: "
                 f"{github_repo.full_name}"
             )
@@ -238,9 +240,9 @@ def process_manual_review(
             )
 
         except Exception as github_error:
-            print(
-                f"[ERROR] GitHub API request failed: "
-                f"{type(github_error).__name__}: {github_error}"
+            logger.exception(
+                "GitHub API request failed for PullRequest ID %s.",
+                pull_request_id,
             )
 
             review.status = "failed"
@@ -250,34 +252,34 @@ def process_manual_review(
             return {
                 "pull_request_id": pull_request_id,
                 "status": "failed",
-                "error": str(github_error),
+                "error": "Failed to retrieve the GitHub pull request.",
             }
 
-        print(
+        logger.info(
             f"Retrieved GitHub PR: #{github_pr.number}"
         )
 
-        print(
+        logger.info(
             f"PR title: {github_pr.title}"
         )
 
-        print(
+        logger.info(
             f"Source branch: {github_pr.head.ref}"
         )
 
-        print(
+        logger.info(
             f"Target branch: {github_pr.base.ref}"
         )
                 # 5. Get changed files
         try:
             files = github_pr.get_files()
-            print(
+            logger.info(
                 f"GitHub reports {files.totalCount} changed files."
             )
         except Exception as files_error:
-            print(
-                f"[ERROR] Failed to retrieve changed files: "
-                f"{type(files_error).__name__}: {files_error}"
+            logger.exception(
+                "Failed to retrieve changed files for PullRequest ID %s.",
+                pull_request_id,
             )
 
             review.status = "failed"
@@ -287,18 +289,18 @@ def process_manual_review(
             return {
                 "pull_request_id": pull_request_id,
                 "status": "failed",
-                "error": str(files_error),
+                "error": "Failed to retrieve changed files from GitHub.",
             }
 
         changed_files = []
 
         for file in files:
-            print(f"Changed file: {file.filename}")
-            print(f"Status: {file.status}")
-            print(f"Additions: {file.additions}")
-            print(f"Deletions: {file.deletions}")
-            print(f"Patch available: {'YES' if file.patch else 'NO'}")
-            print(f"File extension: {file.filename.split('.')[-1] if '.' in file.filename else 'none'}")    
+            logger.debug("Changed file: %s", file.filename)
+            logger.debug("File status: %s", file.status)
+            logger.debug("File additions: %s", file.additions)
+            logger.debug("File deletions: %s", file.deletions)
+            logger.debug("Patch available: %s", bool(file.patch))
+            logger.debug("File extension: %s", file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "none")
 
             code_extensions = {
                 ".py",
@@ -327,7 +329,7 @@ def process_manual_review(
                 extension = "." + file.filename.split(".")[-1].lower()
 
             if extension not in code_extensions:
-                print(
+                logger.info(
                     f"Skipping non-code file: {file.filename}"
                 )
                 continue
@@ -342,7 +344,7 @@ def process_manual_review(
                 "patch": file.patch or "",
             })
 
-        print(
+        logger.info(
             f"Total changed files: {len(changed_files)}"
         )
                 # 6. Build code review input
@@ -362,11 +364,10 @@ Patch:
 ----------------------------------------
 """
 
-        print("Prepared code for AI review.")
-        print(code_for_review)
+        logger.info("Prepared code for AI review.")
 
                 # 7. Send code to Groq AI
-        print("Sending code to Groq AI...")
+        logger.info("Sending code to Groq AI...")
 
         response = client.chat.completions.create(
             model="openai/gpt-oss-20b",
@@ -431,15 +432,17 @@ Rules:
             response_format={"type": "json_object"}
         )
 
-        print("Groq request completed.")
+        logger.info("Groq request completed.")
 
                 # 8. Parse AI response
         ai_response = response.choices[0].message.content
 
-        print("Groq AI response received:")
-        print(ai_response)
-
         parsed_review = json.loads(ai_response)
+
+        logger.info(
+            "Groq AI review parsed successfully for Review ID %s.",
+            review.id,
+        )
                         # 9. Save Review to database
         review.status = "completed"
         review.summary = parsed_review.get(
@@ -450,7 +453,7 @@ Rules:
         review.completed_at = timezone.now()
         review.save()
 
-        print(
+        logger.info(
             f"Review saved to database. Review ID: {review.id}"
         )
                 # 10. Save findings
@@ -519,18 +522,18 @@ Rules:
                 ),
             )
 
-            print(
+            logger.info(
                 f"Finding saved: "
                 f"{severity.upper()} - "
                 f"{issue.get('problem')}"
             )
 
-               
 
-           
+
+
 
         # 11. Build GitHub PR comment
-        print("Preparing GitHub PR comment...")
+        logger.info("Preparing GitHub PR comment...")
 
         comment_body = "## 🤖 AI Code Review\n\n"
 
@@ -612,11 +615,11 @@ Rules:
             "*Automated review generated by AI Code Reviewer.*"
         )
 
-        print("GitHub comment prepared.")
+        logger.info("GitHub comment prepared.")
 
         # 12. Post comment to GitHub
         try:
-            print(
+            logger.info(
                 f"Posting AI review comment to PR "
                 f"#{github_pr.number}..."
             )
@@ -625,49 +628,44 @@ Rules:
                 comment_body
             )
 
-            print(
+            logger.info(
                 "GitHub comment created successfully!"
             )
 
-            print(
+            logger.info(
                 f"Comment ID: {github_comment.id}"
             )
 
-            print(
+            logger.info(
                 f"Comment URL: {github_comment.html_url}"
             )
 
-        except Exception as comment_error:
-            print(
-                f"[WARNING] Failed to post GitHub comment:"
+        except Exception:
+            logger.exception(
+                "Failed to post AI review comment to PR #%s.",
+                github_pr.number,
             )
 
-            print(
-                f"Error type: {type(comment_error).__name__}"
-            )
-
-            print(
-                f"Error details: {comment_error}"
-            )
-
-            print(
+            logger.info(
                 "The AI review was still saved successfully "
                 "to the database."
             )
 
-        print(
-            f"AI Review Summary: "
-            f"{parsed_review.get('summary')}"
+        logger.debug(
+            "AI review summary generated for Review ID %s.",
+            review.id,
         )
 
-        print(
-            f"AI Score: "
-            f"{parsed_review.get('score')}/10"
+        logger.info(
+            "AI review completed for Review ID %s with score %s/10.",
+            review.id,
+            parsed_review.get("score"),
         )
 
-        print(
-            f"Issues Found: "
-            f"{len(parsed_review.get('issues', []))}"
+        logger.info(
+            "AI review found %s issue(s) for Review ID %s.",
+            len(parsed_review.get("issues", [])),
+            review.id,
         )
 
         return {
@@ -684,7 +682,7 @@ Rules:
             "status": "ai_review_completed",
 }
     except PullRequest.DoesNotExist:
-        print(
+        logger.info(
             f"[ERROR] PullRequest {pull_request_id} does not exist"
         )
 
@@ -694,10 +692,10 @@ Rules:
             "error": "PullRequest not found",
         }
 
-    except Exception as e:
-        print(
-            f"[ERROR] Manual review failed: "
-            f"{type(e).__name__}: {e}"
+    except Exception:
+        logger.exception(
+            "Manual review failed for PullRequest ID %s.",
+            pull_request_id,
         )
 
         if "review" in locals() and review:
@@ -710,7 +708,7 @@ Rules:
                 ]
             )
 
-            print(
+            logger.info(
                 f"Review ID {review.id} marked as failed."
             )
 
@@ -723,5 +721,5 @@ Rules:
                 else None
             ),
             "status": "failed",
-            "error": str(e),
+            "error": "AI code review failed. Please try again.",
         }

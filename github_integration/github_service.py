@@ -1,9 +1,12 @@
 import os
 from github import Github, GithubException, GithubIntegration
+from .models import GitHubConnection
+from .crypto import decrypt_github_token
 from django.contrib.auth.models import User
 from reviews.models import Repository, PullRequest, PullRequestFile, Commit
 
 class GitHubAppService:
+
     def __init__(self):
         self.app_id = os.getenv("GITHUB_APP_ID")
         self.installation_id = os.getenv("GITHUB_INSTALLATION_ID")
@@ -21,26 +24,49 @@ class GitHubAppService:
         access_token = self.integration.get_access_token(self.installation_id).token
         return Github(login_or_token=access_token)
 
+def get_oauth_github_client(user: User) -> Github:
+    """
+    Creates a GitHub API client using the OAuth token
+    belonging to the authenticated Django user.
+    """
+    try:
+        connection = GitHubConnection.objects.get(user=user)
+    except GitHubConnection.DoesNotExist:
+        raise ValueError(
+            "GitHub account is not connected. Please connect GitHub first."
+        )
+
+    if not connection.access_token:
+        raise ValueError(
+            "GitHub access token is missing. Please reconnect GitHub."
+        )
+
+    return Github(
+        login_or_token=decrypt_github_token(
+            connection.access_token
+        )
+    )
 
 def sync_repository_to_db(repo_full_name: str, user: User) -> Repository:
     """
-    Retrieves repository details from GitHub API via PyGithub
-    and saves/updates it in the reviews.models.Repository table.
+    Retrieves repository details from GitHub using the
+    authenticated user's OAuth token and saves/updates it
+    in the Repository table.
     """
-    service = GitHubAppService()
-    gh_client = service.get_client()
+    gh_client = get_oauth_github_client(user)
 
     gh_repo = gh_client.get_repo(repo_full_name)
 
     repo, created = Repository.objects.update_or_create(
         owner=user,
-        name=gh_repo.name,
+        github_url=gh_repo.html_url,
         defaults={
-            "github_url": gh_repo.html_url,
+            "name": gh_repo.name,
             "description": gh_repo.description or "",
             "language": gh_repo.language or "",
         },
     )
+
     return repo
 
 
@@ -153,7 +179,7 @@ def sync_single_pull_request_to_db(repo_full_name: str, pr_number: int):
 def sync_pull_request_files(repo_full_name: str, pr_number: int):
     """
     Phase E — Changed files:
-    Retrieves files changed by a PR via PyGithub, saves them, 
+    Retrieves files changed by a PR via PyGithub, saves them,
     and stores their diff/patch information safely.
     """
     service = GitHubAppService()
@@ -162,9 +188,9 @@ def sync_pull_request_files(repo_full_name: str, pr_number: int):
     try:
         gh_repo = gh_client.get_repo(repo_full_name)
         gh_pr = gh_repo.get_pull(pr_number)
-        
+
         pr = PullRequest.objects.get(
-            repository__name=gh_repo.name, 
+            repository__name=gh_repo.name,
             github_pr_number=pr_number
         )
 
@@ -183,7 +209,7 @@ def sync_pull_request_files(repo_full_name: str, pr_number: int):
                     "additions": file_info.additions,
                     "deletions": file_info.deletions,
                     "changes": file_info.changes,
-                    "patch": patch_content, 
+                    "patch": patch_content,
                 }
             )
             saved_files.append(pr_file)
@@ -197,7 +223,7 @@ def sync_pull_request_files(repo_full_name: str, pr_number: int):
 def sync_pull_request_commits(repo_full_name: str, pr_number: int):
     """
     Phase F — Commits:
-    Retrieves commits from a PR via PyGithub, saves them, 
+    Retrieves commits from a PR via PyGithub, saves them,
     and connects them to the Pull Request.
     """
     service = GitHubAppService()
@@ -208,7 +234,7 @@ def sync_pull_request_commits(repo_full_name: str, pr_number: int):
         gh_pr = gh_repo.get_pull(pr_number)
 
         pr = PullRequest.objects.get(
-            repository__name=gh_repo.name, 
+            repository__name=gh_repo.name,
             github_pr_number=pr_number
         )
 
@@ -237,7 +263,7 @@ def sync_pull_request_commits(repo_full_name: str, pr_number: int):
 
     except (GithubException, PullRequest.DoesNotExist) as e:
         print(f"Error syncing commits for PR #{pr_number} in {repo_full_name}: {e}")
-        return []    
+        return []
 
 def post_pull_request_comment(
     repo_full_name: str,
@@ -276,4 +302,4 @@ def post_pull_request_comment(
             f"Failed to post GitHub comment "
             f"to PR #{pr_number}: {e}"
         )
-        return None    
+        return None

@@ -1,4 +1,5 @@
 from rest_framework import generics
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from django.utils import timezone
@@ -15,25 +16,34 @@ from .serializers import (
 
 # GET /api/repositories/  &  POST /api/repositories/
 class RepositoryListCreateView(generics.ListCreateAPIView):
-    queryset = Repository.objects.all().order_by('-created_at')
     serializer_class = RepositorySerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Repository.objects.filter(
+            owner=self.request.user
+        ).order_by("-created_at")
 
 
 # GET /api/reviews/
 class ReviewListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
     queryset = Review.objects.all().order_by('-created_at')
     serializer_class = ReviewListSerializer
 
 
 # GET /api/reviews/{id}/
 class ReviewDetailView(generics.RetrieveAPIView):
+    permission_classes = [IsAuthenticated]
     queryset = Review.objects.all()
     serializer_class = ReviewDetailSerializer
 
 class PullRequestListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
     queryset = PullRequest.objects.all()
     serializer_class = PullRequestSerializer   
 class PullRequestReviewView(generics.GenericAPIView):
+    permission_classes = [IsAuthenticated]
     queryset = PullRequest.objects.all()
     serializer_class = PullRequestSerializer
 
