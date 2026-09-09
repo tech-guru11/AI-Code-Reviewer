@@ -284,6 +284,26 @@ if not DEBUG:
             "SECURE_HSTS_SECONDS must be at least 31536000 when DEBUG=False."
         )
 
+    if not SECRET_KEY:
+        raise RuntimeError(
+            "DJANGO_SECRET_KEY must be configured when DEBUG=False."
+        )
+
+    if not GITHUB_TOKEN_ENCRYPTION_KEY:
+        raise RuntimeError(
+            "GITHUB_TOKEN_ENCRYPTION_KEY must be configured when DEBUG=False."
+        )
+
+    if not GITHUB_CLIENT_SECRET:
+        raise RuntimeError(
+            "GITHUB_CLIENT_SECRET must be configured when DEBUG=False."
+        )
+
+    if not GITHUB_WEBHOOK_SECRET:
+        raise RuntimeError(
+            "GITHUB_WEBHOOK_SECRET must be configured when DEBUG=False."
+        )
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
