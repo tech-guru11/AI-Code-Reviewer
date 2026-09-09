@@ -12,3 +12,5 @@ db.sqlite3
 # Static & Media uploads
 /static/
 /media/
+# Local private keys
+*.pem
