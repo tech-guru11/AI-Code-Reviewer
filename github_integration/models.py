@@ -40,3 +40,21 @@ class GitHubConnection(models.Model):
 
     def __str__(self):
         return f"{self.user.username} -> @{self.github_username}"
+
+
+class GitHubWebhookDelivery(models.Model):
+    delivery_id = models.CharField(
+        max_length=255,
+        unique=True,
+    )
+
+    event_type = models.CharField(
+        max_length=100,
+    )
+
+    received_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    def __str__(self):
+        return f"{self.event_type} - {self.delivery_id}"
