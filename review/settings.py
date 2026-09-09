@@ -178,6 +178,7 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 
+
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
@@ -241,6 +242,11 @@ SESSION_COOKIE_SECURE = (
 CSRF_COOKIE_SECURE = (
     os.getenv("CSRF_COOKIE_SECURE", "False").lower() == "true"
 )
+
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+
+CSRF_COOKIE_SAMESITE = "Lax"
 # Production security requirements
 if not DEBUG:
     if not ALLOWED_HOSTS:
