@@ -38,7 +38,6 @@ def github_connect(request):
         f"&scope={scope}"
         f"&state={state}"
     )
-    print("GITHUB OAUTH URL:", github_url)
 
     return redirect(github_url)
 
@@ -74,11 +73,24 @@ def github_callback(request):
             status=400,
         )
 
-    if not state or state != saved_state:
+    if (
+        not state
+        or not saved_state
+        or not secrets.compare_digest(state, saved_state)
+    ):
         return JsonResponse(
             {"error": "Invalid OAuth state."},
             status=400,
         )
+
+    saved_user_id = request.session.pop(
+        "github_oauth_user_id",
+        None,
+    )
+    request.session.pop(
+        "github_oauth_state",
+        None,
+    )
 
     if not saved_user_id:
         return JsonResponse(
