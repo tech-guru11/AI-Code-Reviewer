@@ -75,8 +75,7 @@ def sync_pull_requests_to_db(repo_full_name: str, user: User):
     Retrieves pull requests from GitHub and saves/updates
     them in the Django PullRequest table.
     """
-    service = GitHubAppService()
-    gh_client = service.get_client()
+    gh_client = get_oauth_github_client(user)
 
     try:
         # Get repository from GitHub
