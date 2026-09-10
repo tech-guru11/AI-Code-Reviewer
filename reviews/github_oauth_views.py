@@ -25,9 +25,7 @@ def github_connect(request):
 
     client_id = settings.GITHUB_CLIENT_ID
 
-    redirect_uri = (
-        "http://127.0.0.1:8000/api/auth/github/callback/"
-    )
+    redirect_uri = settings.GITHUB_REDIRECT_URI
 
     scope = "read:user user:email repo"
 
@@ -118,9 +116,7 @@ def github_callback(request):
             "client_id": settings.GITHUB_CLIENT_ID,
             "client_secret": settings.GITHUB_CLIENT_SECRET,
             "code": code,
-            "redirect_uri": (
-                "http://127.0.0.1:8000/api/auth/github/callback/"
-            ),
+            "redirect_uri": settings.GITHUB_REDIRECT_URI,
         },
         headers={
             "Accept": "application/json",
@@ -191,7 +187,7 @@ def github_callback(request):
     request.session.pop("github_oauth_state", None)
     request.session.pop("github_oauth_user_id", None)
 
-    frontend_url = "http://127.0.0.1:5173/"
+    frontend_url = settings.FRONTEND_URL
 
     return redirect(
         f"{frontend_url}?github=connected"
