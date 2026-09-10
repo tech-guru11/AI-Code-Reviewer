@@ -1,6 +1,8 @@
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from django.middleware.csrf import get_token
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 from github_integration.models import GitHubConnection
 from rest_framework import status
 from rest_framework.throttling import AnonRateThrottle
@@ -83,6 +85,14 @@ class RegisterView(APIView):
         if email and User.objects.filter(email=email).exists():
             return Response(
                 {"error": "Email is already registered."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            validate_password(password, user=None)
+        except ValidationError as error:
+            return Response(
+                {"error": error.messages},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
