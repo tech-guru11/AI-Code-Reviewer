@@ -174,6 +174,13 @@ def github_callback(request):
             {"error": "Invalid GitHub user information."},
             status=400,
         )
+    existing_connection = GitHubConnection.objects.filter(
+        github_user_id=github_user_id
+    ).first()
+
+    if existing_connection and existing_connection.user_id != user.id:
+        frontend_url = settings.FRONTEND_URL
+        return redirect(f"{frontend_url}?github=already_connected")
 
     GitHubConnection.objects.update_or_create(
         user=user,
