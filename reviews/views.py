@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.utils import timezone
 from github_integration.tasks import process_manual_review
-from github_integration.github_service import GitHubAppService
+from github_integration.github_service import get_oauth_github_client
 from .models import Repository, Review, PullRequest, Finding
 from .serializers import (
     PullRequestSerializer,
@@ -38,10 +38,21 @@ class ReviewDetailView(generics.RetrieveAPIView):
     queryset = Review.objects.all()
     serializer_class = ReviewDetailSerializer
 
+
+
 class PullRequestListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = PullRequest.objects.all()
-    serializer_class = PullRequestSerializer   
+    serializer_class = PullRequestSerializer
+
+    def get_queryset(self):
+        return PullRequest.objects.filter(
+            repository__owner=self.request.user
+        ).select_related(
+            "repository",
+            "author",
+        ).order_by("-created_at")
+
+      
 class PullRequestReviewView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated]
     queryset = PullRequest.objects.all()
@@ -52,8 +63,16 @@ class PullRequestReviewView(generics.GenericAPIView):
 
         try:
             repository = pull_request.repository
-            service = GitHubAppService()
-            github_client = service.get_client()
+
+            if repository.owner != request.user:
+                return Response(
+                    {
+                        "message": "You do not have permission to review this pull request."
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            github_client = get_oauth_github_client(request.user)
 
             repo_full_name = (
                 repository.github_url
@@ -89,13 +108,16 @@ class PullRequestReviewView(generics.GenericAPIView):
             .first()
         )
 
-        if existing_review:
+        if existing_review and existing_review.status in (
+            "completed",
+            "processing",
+        ):
             return Response(
                 {
                     "message": (
                         "This commit has already been reviewed."
                         if existing_review.status == "completed"
-                        else "A review for this commit already exists."
+                        else "A review for this commit is already processing."
                     ),
                     "pull_request_id": pull_request.id,
                     "review_id": existing_review.id,
@@ -105,14 +127,31 @@ class PullRequestReviewView(generics.GenericAPIView):
                 status=status.HTTP_200_OK,
             )
 
-        # Create the Review BEFORE starting Celery.
-        # This gives the frontend a permanent review_id to monitor.
-        review = Review.objects.create(
-            pull_request=pull_request,
-            commit_sha=commit_sha,
-            status="processing",
-        )
-
+      # Reuse a failed review for this commit when retrying.
+        if existing_review and existing_review.status == "failed":
+            review = existing_review
+            review.status = "processing"
+            review.started_at = timezone.now()
+            review.completed_at = None
+            review.score = None
+            review.summary = ""
+            review.save(
+                update_fields=[
+                    "status",
+                    "started_at",
+                    "completed_at",
+                    "score",
+                    "summary",
+                ]
+            )
+        else:
+            # Create a new Review for a commit that has never been reviewed.
+            review = Review.objects.create(
+                pull_request=pull_request,
+                commit_sha=commit_sha,
+                status="processing",
+                started_at=timezone.now(),
+            )
         # Start the background AI review.
         task = process_manual_review.delay(
             pull_request.id,

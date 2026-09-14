@@ -1,12 +1,9 @@
 import secrets
-
 import requests
-
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.http import JsonResponse
 from django.shortcuts import redirect
-
 from github_integration.models import GitHubConnection
 from github_integration.crypto import encrypt_github_token
 

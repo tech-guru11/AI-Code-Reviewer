@@ -3,7 +3,6 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from reviews.serializers import RepositorySerializer, SyncRepositorySerializer
-from .github_service import sync_repository_to_db
 from .tasks import process_github_event 
 from django.db import IntegrityError
 from .models import GitHubWebhookDelivery
@@ -15,8 +14,44 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django.conf import settings
 import logging
+from .github_service import (
+    sync_repository_to_db,
+    sync_pull_requests_to_db,
+    get_user_github_repositories,
+)
+
 logger = logging.getLogger(__name__)
 
+class GitHubRepositoriesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            repositories = get_user_github_repositories(
+                request.user
+            )
+
+            return Response(
+                repositories,
+                status=status.HTTP_200_OK,
+            )
+
+        except Exception:
+            logger.exception(
+                "Failed to fetch GitHub repositories for user '%s'.",
+                request.user.username,
+            )
+
+            return Response(
+                {
+                    "error": (
+                        "Unable to fetch GitHub repositories. "
+                        "Please reconnect GitHub if the problem continues."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
 class SyncRepositoryView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -29,6 +64,10 @@ class SyncRepositoryView(APIView):
 
         try:
             repo = sync_repository_to_db(repo_full_name=repo_full_name, user=request.user)
+            sync_pull_requests_to_db(
+                repo_full_name=repo_full_name,
+                user=request.user,
+            )
             response_serializer = RepositorySerializer(repo)
             return Response(response_serializer.data, status=status.HTTP_200_OK)
         except Exception:

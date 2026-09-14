@@ -1,25 +1,39 @@
-# Python virtual environment
-venv/
-*.pyc
+# Python
 __pycache__/
+*.py[cod]
+*.pyo
 
-# Local database (SQLite)
-db.sqlite3
-
-# Environment variables & Secret keys
+# Virtual environments
+venv/
+review/
 .env
+.env.*
+!.env.example
 
-# Static & Media uploads
+# Django
+db.sqlite3
+*.sqlite3
+
+# Static and media
 /static/
 /media/
-# Local private keys
+
+# Secrets and private keys
 *.pem
+*.key
+*.crt
 
 # Redis persistence
- dump.rdb
+*.rdb
 
-# Redis persistence
-dump.rdb
+# Logs
+*.log
 
-# Redis persistence
-dump.rdb
+# IDE / editor files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.dbstaticfiles/
+staticfiles/

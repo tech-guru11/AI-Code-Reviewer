@@ -38,8 +38,7 @@ def decrypt_github_token(value):
     if not value:
         return value
 
-    # Temporary compatibility with existing plaintext tokens.
-    # We will migrate the existing database token next.
+
     if not value.startswith(PREFIX):
         return value
 

@@ -10,10 +10,21 @@ class GitHubAppService:
     def __init__(self):
         self.app_id = os.getenv("GITHUB_APP_ID")
         self.installation_id = os.getenv("GITHUB_INSTALLATION_ID")
-        self.key_path = os.getenv("GITHUB_PRIVATE_KEY_PATH")
 
-        with open(self.key_path, "r") as key_file:
-            self.private_key = key_file.read()
+        # Production: private key comes directly from an environment variable.
+        # Local development: fall back to the private-key file.
+        self.private_key = os.getenv("GITHUB_PRIVATE_KEY")
+
+        if not self.private_key:
+            key_path = os.getenv("GITHUB_PRIVATE_KEY_PATH")
+
+            if not key_path:
+                raise ValueError(
+                    "GitHub private key is not configured."
+                )
+
+            with open(key_path, "r") as key_file:
+                self.private_key = key_file.read()
 
         self.integration = GithubIntegration(
             integration_id=self.app_id,
@@ -46,6 +57,35 @@ def get_oauth_github_client(user: User) -> Github:
             connection.access_token
         )
     )
+
+def get_user_github_repositories(user: User):
+    """
+    Returns repositories accessible to the authenticated
+    user's connected GitHub account.
+    """
+    gh_client = get_oauth_github_client(user)
+
+    gh_user = gh_client.get_user()
+
+    repositories = []
+
+    for gh_repo in gh_user.get_repos(
+        visibility="all",
+        affiliation="owner,collaborator,organization_member",
+        sort="updated",
+    ):
+        repositories.append({
+            "id": gh_repo.id,
+            "name": gh_repo.name,
+            "full_name": gh_repo.full_name,
+            "github_url": gh_repo.html_url,
+            "description": gh_repo.description or "",
+            "language": gh_repo.language or "",
+            "private": gh_repo.private,
+            "default_branch": gh_repo.default_branch,
+        })
+
+    return repositories
 
 def sync_repository_to_db(repo_full_name: str, user: User) -> Repository:
     """
@@ -85,9 +125,14 @@ def sync_pull_requests_to_db(repo_full_name: str, user: User):
         return []
 
     # Get corresponding Django repository (ensure it exists first)
-    repo, created = Repository.objects.get_or_create(
+    repo, created = Repository.objects.update_or_create(
         owner=user,
-        name=gh_repo.name
+        github_url=gh_repo.html_url,
+        defaults={
+            "name": gh_repo.name,
+            "description": gh_repo.description or "",
+            "language": gh_repo.language or "",
+        },
     )
 
     try:

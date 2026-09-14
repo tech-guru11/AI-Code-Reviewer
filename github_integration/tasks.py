@@ -429,7 +429,84 @@ Rules:
                     "content": code_for_review
                 }
             ],
-            response_format={"type": "json_object"}
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "code_review",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "summary": {
+                                "type": "string"
+                            },
+                            "score": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 10
+                            },
+                            "issues": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "file": {
+                                            "type": "string"
+                                        },
+                                        "line": {
+                                            "type": "integer"
+                                        },
+                                        "severity": {
+                                            "type": "string",
+                                            "enum": [
+                                                "LOW",
+                                                "MEDIUM",
+                                                "HIGH",
+                                                "CRITICAL"
+                                            ]
+                                        },
+                                        "category": {
+                                            "type": "string",
+                                            "enum": [
+                                                "Bug",
+                                                "Security",
+                                                "Performance",
+                                                "Code Style",
+                                                "Code Quality"
+                                            ]
+                                        },
+                                        "problem": {
+                                            "type": "string"
+                                        },
+                                        "suggestion": {
+                                            "type": "string"
+                                        },
+                                        "code_snippet": {
+                                            "type": "string"
+                                        }
+                                    },
+                                    "required": [
+                                        "file",
+                                        "line",
+                                        "severity",
+                                        "category",
+                                        "problem",
+                                        "suggestion",
+                                        "code_snippet"
+                                    ],
+                                    "additionalProperties": False
+                                }
+                            }
+                        },
+                        "required": [
+                            "summary",
+                            "score",
+                            "issues"
+                        ],
+                        "additionalProperties": False
+                    },
+                    "strict": True
+                }
+            }
         )
 
         logger.info("Groq request completed.")
