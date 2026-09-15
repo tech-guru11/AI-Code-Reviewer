@@ -246,7 +246,7 @@ CSRF_COOKIE_SECURE = (
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "None"
 
-CSRF_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SAMESITE = "None"
 # Production security requirements
 if not DEBUG:
     if not ALLOWED_HOSTS:
