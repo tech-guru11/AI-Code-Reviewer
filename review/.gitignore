@@ -20,3 +20,5 @@ dump.rdb
 
 # Virtual environment symlink
 lib64
+
+secrets/

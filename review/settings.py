@@ -1,6 +1,9 @@
 import os
+
 from dotenv import load_dotenv
+
 from pathlib import Path
+
 import dj_database_url
 # Load environment variables from .env file
 load_dotenv()
@@ -199,6 +202,15 @@ CSRF_TRUSTED_ORIGINS = [
     if origin.strip()
 ]
 
+# Trust the proxy's X-Forwarded-Proto header so request.is_secure() works
+# behind nginx/Caddy. Must point at your reverse proxy's scheme header.
+_proxy_ssl_header = os.getenv("SECURE_PROXY_SSL_HEADER", "").strip()
+if _proxy_ssl_header:
+    name, _, value = _proxy_ssl_header.partition(" ")
+    SECURE_PROXY_SSL_HEADER = (name, value)
+else:
+    SECURE_PROXY_SSL_HEADER = None
+
 SECURE_SSL_REDIRECT = (
     os.getenv("SECURE_SSL_REDIRECT", "False").lower() == "true"
 )
@@ -235,18 +247,29 @@ SECURE_REFERRER_POLICY = os.getenv(
     "same-origin"
 )
 
+SESSION_COOKIE_SAMESITE = os.getenv(
+    "SESSION_COOKIE_SAMESITE",
+    "None",
+)
+
+CSRF_COOKIE_SAMESITE = os.getenv(
+    "CSRF_COOKIE_SAMESITE",
+    "None",
+)
+
+# Browsers reject SameSite=None cookies unless they are also Secure,
+# so the session/CSRF cookies must be marked Secure in that case.
 SESSION_COOKIE_SECURE = (
     os.getenv("SESSION_COOKIE_SECURE", "False").lower() == "true"
+    or SESSION_COOKIE_SAMESITE.lower() == "none"
 )
 
 CSRF_COOKIE_SECURE = (
     os.getenv("CSRF_COOKIE_SECURE", "False").lower() == "true"
+    or CSRF_COOKIE_SAMESITE.lower() == "none"
 )
 
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = "None"
-
-CSRF_COOKIE_SAMESITE = "None"
 # Production security requirements
 if not DEBUG:
     if not ALLOWED_HOSTS:
