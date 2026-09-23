@@ -6,6 +6,7 @@ from django.http import JsonResponse
 from django.shortcuts import redirect
 from github_integration.models import GitHubConnection
 from github_integration.crypto import encrypt_github_token
+from reviews.auth_views import get_profile, mask_email
 
 
 def github_connect(request):
@@ -13,6 +14,32 @@ def github_connect(request):
         return JsonResponse(
             {"error": "Authentication required."},
             status=401,
+        )
+
+    if not request.user.email:
+        return JsonResponse(
+            {
+                "error": (
+                    "You must have an email address on your account "
+                    "before connecting GitHub."
+                ),
+                "error_code": "email_missing",
+            },
+            status=403,
+        )
+
+    if not get_profile(request.user).email_verified:
+        return JsonResponse(
+            {
+                "error": (
+                    "Your email address must be verified before you can "
+                    "connect a GitHub account. "
+                    "Request a code and confirm it first."
+                ),
+                "error_code": "email_not_verified",
+                "email": mask_email(request.user.email),
+            },
+            status=403,
         )
 
     state = secrets.token_urlsafe(32)
@@ -171,6 +198,70 @@ def github_callback(request):
             {"error": "Invalid GitHub user information."},
             status=400,
         )
+
+    email_response = requests.get(
+        "https://api.github.com/user/emails",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/vnd.github+json",
+        },
+        timeout=15,
+    )
+
+    if email_response.status_code != 200:
+        return JsonResponse(
+            {
+                "error": "Failed to retrieve the GitHub account email.",
+            },
+            status=400,
+        )
+
+    emails = email_response.json()
+
+    if not emails:
+        return JsonResponse(
+            {
+                "error": (
+                    "No email found on the GitHub account. "
+                    "Add an email to your GitHub profile first."
+                ),
+            },
+            status=400,
+        )
+
+    primary_email = next(
+        (item for item in emails if item.get("primary")),
+        emails[0],
+    )
+
+    github_email = (primary_email.get("email") or "").strip().lower()
+    account_email = (user.email or "").strip().lower()
+
+    if primary_email.get("verified") is not True:
+        return JsonResponse(
+            {
+                "error": (
+                    "The GitHub account's primary email is not verified "
+                    "on GitHub."
+                ),
+            },
+            status=400,
+        )
+
+    if not account_email or github_email != account_email:
+        return JsonResponse(
+            {
+                "error": (
+                    "The GitHub account's verified primary email "
+                    f"({mask_email(github_email)}) does not match the "
+                    f"email on your account "
+                    f"({mask_email(account_email)}). Connect the GitHub "
+                    "account that uses your account email."
+                ),
+            },
+            status=400,
+        )
+
     existing_connection = GitHubConnection.objects.filter(
         github_user_id=github_user_id
     ).first()

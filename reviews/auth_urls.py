@@ -6,6 +6,8 @@ from .auth_views import (
     LoginView,
     LogoutView,
     CurrentUserView,
+    EmailVerifyRequestView,
+    EmailVerifyConfirmView,
 )
 
 from .github_oauth_views import (
@@ -20,6 +22,18 @@ urlpatterns = [
     path("login/", LoginView.as_view(), name="login"),
     path("logout/", LogoutView.as_view(), name="logout"),
     path("me/", CurrentUserView.as_view(), name="current-user"),
+
+    path(
+        "email/verify/request/",
+        EmailVerifyRequestView.as_view(),
+        name="email-verify-request",
+    ),
+
+    path(
+        "email/verify/confirm/",
+        EmailVerifyConfirmView.as_view(),
+        name="email-verify-confirm",
+    ),
 
     path(
         "github/connect/",
