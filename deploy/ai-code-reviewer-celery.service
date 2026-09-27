@@ -1,0 +1,17 @@
+[Unit]
+Description=AI Code Reviewer Celery worker
+After=network.target redis-server.service mysql.service
+Wants=redis-server.service mysql.service
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/sst
+RuntimeDirectory=ai-code-reviewer-celery
+Environment=DJANGO_SETTINGS_MODULE=review.settings
+ExecStart=/var/www/sst/review/bin/celery -A review worker --loglevel=INFO --concurrency=2 -E
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

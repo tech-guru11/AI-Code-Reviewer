@@ -1,0 +1,17 @@
+[Unit]
+Description=AI Code Reviewer Gunicorn daemon
+After=network.target mysql.service redis-server.service
+Wants=mysql.service redis-server.service
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/sst
+RuntimeDirectory=ai-code-reviewer
+Environment=DJANGO_SETTINGS_MODULE=review.settings
+ExecStart=/var/www/sst/review/bin/gunicorn review.wsgi:application --workers 3 --bind unix:/run/ai-code-reviewer/gunicorn.sock --access-logfile - --error-logfile -
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
