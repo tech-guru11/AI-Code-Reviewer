@@ -366,11 +366,17 @@ REST_FRAMEWORK = {
         "rest_framework.throttling.UserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
-        "anon": "20/minute",
-        "user": "60/minute",
-        "login": "5/minute",
-        "register": "5/minute",
-        "email_verify": "5/hour",
-        "email_verify_confirm": "10/minute",
+        # Throttling is meaningless in tests and actively harmful: the
+        # default LocMem cache outlives each test, while SQLite reuses
+        # primary keys after rollback, so one test's request count is
+        # billed to the next test's freshly created user.
+        "anon": "1000/minute" if TESTING else "20/minute",
+        "user": "1000/minute" if TESTING else "60/minute",
+        "login": "1000/minute" if TESTING else "5/minute",
+        "register": "1000/minute" if TESTING else "5/minute",
+        "email_verify": "1000/hour" if TESTING else "5/hour",
+        "email_verify_confirm": (
+            "1000/minute" if TESTING else "10/minute"
+        ),
     },
 }

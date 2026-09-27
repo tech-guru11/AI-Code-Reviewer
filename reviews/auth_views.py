@@ -268,14 +268,30 @@ class EmailVerifyRequestView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
+        response = {
+            "message": (
+                f"A verification code was sent to {mask_email(user.email)}."
+            ),
+            "email": mask_email(user.email),
+            "expires_in_minutes": VERIFICATION_CODE_TTL_MINUTES,
+        }
+
+        # Local development convenience. With the console email backend the
+        # message is only ever printed to stdout and never actually
+        # delivered, so returning the code lets the UI display it instead of
+        # stranding the user with a "check your email" that goes nowhere.
+        # Both conditions must hold, so this can never fire against a real
+        # mail backend.
+        if (
+            settings.DEBUG
+            and settings.EMAIL_BACKEND.endswith(
+                "console.EmailBackend"
+            )
+        ):
+            response["dev_code"] = code
+
         return Response(
-            {
-                "message": (
-                    f"A verification code was sent to {mask_email(user.email)}."
-                ),
-                "email": mask_email(user.email),
-                "expires_in_minutes": VERIFICATION_CODE_TTL_MINUTES,
-            },
+            response,
             status=status.HTTP_200_OK,
         )
 

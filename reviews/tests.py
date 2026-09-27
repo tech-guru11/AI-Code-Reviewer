@@ -1,6 +1,6 @@
 from django.contrib.auth.models import User
 from django.core import mail
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from unittest import mock
 from rest_framework.test import APIClient
@@ -31,6 +31,77 @@ class EmailVerificationTests(TestCase):
         )
         self.client = APIClient()
         self.client.force_login(self.user)
+
+    def test_dev_code_returned_only_under_console_backend(self):
+        """
+        The code is echoed back so local dev can display it, but only
+        when nothing is actually being delivered. A real mail backend or
+        DEBUG=False must never expose it.
+        """
+        with override_settings(
+            DEBUG=True,
+            EMAIL_BACKEND=(
+                "django.core.mail.backends.console.EmailBackend"
+            ),
+        ):
+            with mock.patch("reviews.auth_views.send_mail"):
+                response = self.client.post(
+                    reverse("email-verify-request")
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("dev_code", response.data)
+
+        with override_settings(
+            DEBUG=True,
+            EMAIL_BACKEND=(
+                "django.core.mail.backends.smtp.EmailBackend"
+            ),
+        ):
+            with mock.patch("reviews.auth_views.send_mail"):
+                response = self.client.post(
+                    reverse("email-verify-request")
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("dev_code", response.data)
+
+        with override_settings(
+            DEBUG=False,
+            EMAIL_BACKEND=(
+                "django.core.mail.backends.console.EmailBackend"
+            ),
+        ):
+            with mock.patch("reviews.auth_views.send_mail"):
+                response = self.client.post(
+                    reverse("email-verify-request")
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("dev_code", response.data)
+
+    def test_dev_code_confirms_successfully(self):
+        with override_settings(
+            DEBUG=True,
+            EMAIL_BACKEND=(
+                "django.core.mail.backends.console.EmailBackend"
+            ),
+        ):
+            with mock.patch("reviews.auth_views.send_mail"):
+                response = self.client.post(
+                    reverse("email-verify-request")
+                )
+
+            code = response.data["dev_code"]
+
+        confirm = self.client.post(
+            reverse("email-verify-confirm"),
+            {"code": code},
+        )
+
+        self.assertEqual(confirm.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.profile.email_verified)
 
     def test_request_code_sends_email_and_stores_hashed_code(self):
         response = self.client.post(
