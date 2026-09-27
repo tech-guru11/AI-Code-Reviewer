@@ -35,5 +35,6 @@ db.sqlite3
 
 # OS files
 .DS_Store
-Thumbs.dbstaticfiles/
+Thumbs.db
+
 staticfiles/

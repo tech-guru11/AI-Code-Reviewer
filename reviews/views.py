@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -14,6 +16,9 @@ from .serializers import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 # GET /api/repositories/  &  POST /api/repositories/
 class RepositoryListCreateView(generics.ListCreateAPIView):
     serializer_class = RepositorySerializer
@@ -28,15 +33,28 @@ class RepositoryListCreateView(generics.ListCreateAPIView):
 # GET /api/reviews/
 class ReviewListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = Review.objects.all().order_by('-created_at')
     serializer_class = ReviewListSerializer
+
+    def get_queryset(self):
+        return (
+            Review.objects
+            .filter(pull_request__repository__owner=self.request.user)
+            .select_related("pull_request", "pull_request__repository")
+            .order_by("-created_at")
+        )
 
 
 # GET /api/reviews/{id}/
 class ReviewDetailView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = Review.objects.all()
     serializer_class = ReviewDetailSerializer
+
+    def get_queryset(self):
+        return (
+            Review.objects
+            .filter(pull_request__repository__owner=self.request.user)
+            .select_related("pull_request", "pull_request__repository")
+        )
 
 
 
@@ -55,22 +73,20 @@ class PullRequestListView(generics.ListAPIView):
       
 class PullRequestReviewView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = PullRequest.objects.all()
     serializer_class = PullRequestSerializer
+
+    def get_queryset(self):
+        # Scoping the queryset makes get_object() reject pull requests
+        # owned by other users for every HTTP verb on this view.
+        return PullRequest.objects.filter(
+            repository__owner=self.request.user
+        ).select_related("repository", "author")
 
     def post(self, request, pk):
         pull_request = self.get_object()
 
         try:
             repository = pull_request.repository
-
-            if repository.owner != request.user:
-                return Response(
-                    {
-                        "message": "You do not have permission to review this pull request."
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
 
             github_client = get_oauth_github_client(request.user)
 
@@ -144,6 +160,10 @@ class PullRequestReviewView(generics.GenericAPIView):
                     "summary",
                 ]
             )
+
+            # A previous attempt may have saved findings before failing,
+            # so clear them to avoid duplicating them on this retry.
+            review.findings.all().delete()
         else:
             # Create a new Review for a commit that has never been reviewed.
             review = Review.objects.create(
@@ -153,11 +173,38 @@ class PullRequestReviewView(generics.GenericAPIView):
                 started_at=timezone.now(),
             )
         # Start the background AI review.
-        task = process_manual_review.delay(
-            pull_request.id,
-            commit_sha,
-            review.id,
-        )
+        try:
+            task = process_manual_review.delay(
+                pull_request.id,
+                commit_sha,
+                review.id,
+            )
+        except Exception:
+            # The task never reached the broker, so the review would stay
+            # "processing" forever. Mark it failed so it can be retried.
+            logger.exception(
+                "Failed to enqueue AI review for PullRequest ID %s.",
+                pull_request.id,
+            )
+
+            review.status = "failed"
+            review.completed_at = timezone.now()
+            review.save(
+                update_fields=["status", "completed_at"]
+            )
+
+            return Response(
+                {
+                    "message": (
+                        "Could not start the AI review. Please try again."
+                    ),
+                    "pull_request_id": pull_request.id,
+                    "review_id": review.id,
+                    "commit_sha": commit_sha,
+                    "status": "failed",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         return Response(
             {

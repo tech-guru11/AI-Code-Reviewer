@@ -1,9 +1,15 @@
+import logging
 import os
+
 from github import Github, GithubException, GithubIntegration
+from django.utils import timezone
 from .models import GitHubConnection
 from .crypto import decrypt_github_token
 from django.contrib.auth.models import User
 from reviews.models import Repository, PullRequest, PullRequestFile, Commit
+
+logger = logging.getLogger(__name__)
+
 
 class GitHubAppService:
 
@@ -87,6 +93,28 @@ def get_user_github_repositories(user: User):
 
     return repositories
 
+def resolve_github_author(gh_user):
+    """
+    Map a GitHub user onto the local Django account that owns them.
+
+    Only accounts that completed the GitHub OAuth connection are matched.
+    Creating a placeholder user from a raw GitHub login would let an
+    unverified GitHub account silently claim a local username, and would
+    block that username from ever being registered.
+    """
+    if gh_user is None or not gh_user.login:
+        return None
+
+    try:
+        connection = GitHubConnection.objects.select_related(
+            "user"
+        ).get(github_username=gh_user.login)
+    except GitHubConnection.DoesNotExist:
+        return None
+
+    return connection.user
+
+
 def sync_repository_to_db(repo_full_name: str, user: User) -> Repository:
     """
     Retrieves repository details from GitHub using the
@@ -121,7 +149,11 @@ def sync_pull_requests_to_db(repo_full_name: str, user: User):
         # Get repository from GitHub
         gh_repo = gh_client.get_repo(repo_full_name)
     except GithubException as e:
-        print(f"Error: Could not find or access repository '{repo_full_name}': {e}")
+        logger.error(
+            "Could not find or access repository '%s': %s",
+            repo_full_name,
+            e,
+        )
         return []
 
     # Get corresponding Django repository (ensure it exists first)
@@ -140,21 +172,12 @@ def sync_pull_requests_to_db(repo_full_name: str, user: User):
         saved_prs = []
 
         for gh_pr in pull_requests:
-            author = None
-            if gh_pr.user:
-                author, _ = User.objects.get_or_create(
-                    username=gh_pr.user.login,
-                    defaults={
-                        "email": gh_pr.user.email or ""
-                    }
-                )
-
             pr, _ = PullRequest.objects.update_or_create(
                 repository=repo,
                 github_pr_number=gh_pr.number,
                 defaults={
                     "title": gh_pr.title,
-                    "author": author,
+                    "author": resolve_github_author(gh_pr.user),
                     "source_branch": gh_pr.head.ref,
                     "target_branch": gh_pr.base.ref,
                     "status": gh_pr.state,
@@ -165,10 +188,70 @@ def sync_pull_requests_to_db(repo_full_name: str, user: User):
         return saved_prs
 
     except GithubException as e:
-        print(f"Error fetching pull requests for {repo_full_name}: {e}")
+        logger.error(
+            "Error fetching pull requests for %s: %s",
+            repo_full_name,
+            e,
+        )
         return []
 
-def sync_single_pull_request_to_db(repo_full_name: str, pr_number: int):
+def get_registered_repository(
+    repo_full_name: str,
+    user: User = None,
+) -> Repository:
+    """
+    Resolve the Repository row that a webhook event refers to.
+
+    A GitHub repository can be registered by several users, so github_url
+    alone is not unique and a plain get() would raise
+    MultipleObjectsReturned. When the caller knows the owner the lookup is
+    scoped to them; otherwise the registration whose owner connected that
+    GitHub account wins, falling back to the oldest registration.
+    """
+    matches = Repository.objects.filter(
+        github_url=f"https://github.com/{repo_full_name}"
+    )
+
+    if user is not None:
+        matches = matches.filter(owner=user)
+
+    candidates = list(
+        matches.select_related("owner", "owner__github_connection")
+    )
+
+    if not candidates:
+        raise Repository.DoesNotExist(
+            f"Repository '{repo_full_name}' is not registered."
+        )
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    owner_login = repo_full_name.split("/", 1)[0]
+
+    for candidate in candidates:
+        connection = getattr(
+            candidate.owner, "github_connection", None
+        )
+
+        if connection and connection.github_username == owner_login:
+            return candidate
+
+    logger.warning(
+        "Repository '%s' is registered by %d users; "
+        "using the oldest registration.",
+        repo_full_name,
+        len(candidates),
+    )
+
+    return min(candidates, key=lambda repo: repo.created_at)
+
+
+def sync_single_pull_request_to_db(
+    repo_full_name: str,
+    pr_number: int,
+    user: User = None,
+):
     """
     Retrieve one Pull Request from GitHub and create/update
     the corresponding Django PullRequest record.
@@ -183,21 +266,11 @@ def sync_single_pull_request_to_db(repo_full_name: str, pr_number: int):
     # Get GitHub Pull Request
     gh_pr = gh_repo.get_pull(pr_number)
 
-    # Find the Django repository using the GitHub URL
-    repository = Repository.objects.get(
-        github_url=gh_repo.html_url
+    # Find the Django repository that this pull request belongs to
+    repository = get_registered_repository(
+        repo_full_name,
+        user=user,
     )
-
-    # Get or create the GitHub user who opened the PR
-    author = None
-
-    if gh_pr.user:
-        author, _ = User.objects.get_or_create(
-            username=gh_pr.user.login,
-            defaults={
-                "email": gh_pr.user.email or ""
-            }
-        )
 
     # Create or update the Django PullRequest
     pull_request, created = PullRequest.objects.update_or_create(
@@ -205,17 +278,18 @@ def sync_single_pull_request_to_db(repo_full_name: str, pr_number: int):
         github_pr_number=gh_pr.number,
         defaults={
             "title": gh_pr.title,
-            "author": author,
+            "author": resolve_github_author(gh_pr.user),
             "source_branch": gh_pr.head.ref,
             "target_branch": gh_pr.base.ref,
             "status": gh_pr.state,
         }
     )
 
-    print(
-        f"{'Created' if created else 'Updated'} "
-        f"Django PullRequest: ID={pull_request.id} "
-        f"PR=#{gh_pr.number}"
+    logger.info(
+        "%s Django PullRequest: ID=%s PR=#%s",
+        "Created" if created else "Updated",
+        pull_request.id,
+        gh_pr.number,
     )
 
     return pull_request
@@ -234,7 +308,7 @@ def sync_pull_request_files(repo_full_name: str, pr_number: int):
         gh_pr = gh_repo.get_pull(pr_number)
 
         pr = PullRequest.objects.get(
-            repository__name=gh_repo.name,
+            repository__github_url=gh_repo.html_url,
             github_pr_number=pr_number
         )
 
@@ -260,8 +334,17 @@ def sync_pull_request_files(repo_full_name: str, pr_number: int):
 
         return saved_files
 
-    except (GithubException, PullRequest.DoesNotExist) as e:
-        print(f"Error syncing files for PR #{pr_number} in {repo_full_name}: {e}")
+    except (
+        GithubException,
+        PullRequest.DoesNotExist,
+        PullRequest.MultipleObjectsReturned,
+    ) as e:
+        logger.error(
+            "Error syncing files for PR #%s in %s: %s",
+            pr_number,
+            repo_full_name,
+            e,
+        )
         return []
 
 def sync_pull_request_commits(repo_full_name: str, pr_number: int):
@@ -278,7 +361,7 @@ def sync_pull_request_commits(repo_full_name: str, pr_number: int):
         gh_pr = gh_repo.get_pull(pr_number)
 
         pr = PullRequest.objects.get(
-            repository__name=gh_repo.name,
+            repository__github_url=gh_repo.html_url,
             github_pr_number=pr_number
         )
 
@@ -289,6 +372,16 @@ def sync_pull_request_commits(repo_full_name: str, pr_number: int):
             sha = commit_info.sha
             commit_detail = commit_info.commit
             author_info = commit_detail.author
+            committer_info = commit_detail.committer
+
+            # committed_at is a required column, so fall back to the
+            # committer date and finally to the sync time.
+            if author_info and author_info.date:
+                committed_at = author_info.date
+            elif committer_info and committer_info.date:
+                committed_at = committer_info.date
+            else:
+                committed_at = timezone.now()
 
             commit_obj, _ = Commit.objects.update_or_create(
                 sha=sha,
@@ -298,15 +391,24 @@ def sync_pull_request_commits(repo_full_name: str, pr_number: int):
                     "author_name": author_info.name if author_info else "",
                     "author_email": author_info.email if author_info else "",
                     "message": commit_detail.message,
-                    "committed_at": author_info.date if author_info else None,
+                    "committed_at": committed_at,
                 }
             )
             saved_commits.append(commit_obj)
 
         return saved_commits
 
-    except (GithubException, PullRequest.DoesNotExist) as e:
-        print(f"Error syncing commits for PR #{pr_number} in {repo_full_name}: {e}")
+    except (
+        GithubException,
+        PullRequest.DoesNotExist,
+        PullRequest.MultipleObjectsReturned,
+    ) as e:
+        logger.error(
+            "Error syncing commits for PR #%s in %s: %s",
+            pr_number,
+            repo_full_name,
+            e,
+        )
         return []
 
 def post_pull_request_comment(
@@ -334,16 +436,17 @@ def post_pull_request_comment(
         # Create the GitHub comment
         github_comment = issue.create_comment(comment)
 
-        print(
-            f"GitHub comment posted successfully "
-            f"to PR #{pr_number}"
+        logger.info(
+            "GitHub comment posted successfully to PR #%s",
+            pr_number
         )
 
         return github_comment
 
     except GithubException as e:
-        print(
-            f"Failed to post GitHub comment "
-            f"to PR #{pr_number}: {e}"
+        logger.error(
+            "Failed to post GitHub comment to PR #%s: %s",
+            pr_number,
+            e,
         )
         return None

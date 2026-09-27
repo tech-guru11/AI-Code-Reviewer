@@ -5,7 +5,15 @@ from django.urls import reverse
 from unittest import mock
 from rest_framework.test import APIClient
 
-from reviews.models import EmailVerificationCode, UserProfile
+from github_integration.tasks import normalize_score
+from reviews.models import (
+    EmailVerificationCode,
+    Finding,
+    PullRequest,
+    Repository,
+    Review,
+    UserProfile,
+)
 
 
 def _code_for(user):
@@ -240,3 +248,205 @@ def _plain_code(body):
     import re
     match = re.search(r"\b(\d{6})\b", body)
     return match.group(1) if match else None
+
+
+class ReviewIsolationTests(TestCase):
+    """
+    Reviews belong to the owner of the repository, so a user must never
+    be able to list or read another user's reviews.
+    """
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="owner",
+            email="owner@example.com",
+            password="strong-password-123",
+        )
+        self.intruder = User.objects.create_user(
+            username="intruder",
+            email="intruder@example.com",
+            password="strong-password-123",
+        )
+
+        self.owner_repo = Repository.objects.create(
+            owner=self.owner,
+            name="owner-repo",
+            github_url="https://github.com/owner/owner-repo",
+        )
+        self.intruder_repo = Repository.objects.create(
+            owner=self.intruder,
+            name="intruder-repo",
+            github_url="https://github.com/intruder/intruder-repo",
+        )
+
+        self.owner_pr = PullRequest.objects.create(
+            repository=self.owner_repo,
+            title="Owner PR",
+            github_pr_number=1,
+            source_branch="feature",
+            target_branch="main",
+        )
+        self.intruder_pr = PullRequest.objects.create(
+            repository=self.intruder_repo,
+            title="Intruder PR",
+            github_pr_number=2,
+            source_branch="feature",
+            target_branch="main",
+        )
+
+        self.owner_review = Review.objects.create(
+            pull_request=self.owner_pr,
+            commit_sha="a" * 40,
+            status="completed",
+            summary="Owner summary",
+            score=8,
+        )
+        self.intruder_review = Review.objects.create(
+            pull_request=self.intruder_pr,
+            commit_sha="b" * 40,
+            status="completed",
+            summary="Intruder summary",
+            score=3,
+        )
+
+        Finding.objects.create(
+            review=self.intruder_review,
+            file_path="secret.py",
+            severity="critical",
+            title="Intruder finding",
+            description="Should stay private.",
+        )
+
+        self.client = APIClient()
+
+    def test_review_list_only_returns_own_reviews(self):
+        self.client.force_login(self.owner)
+
+        response = self.client.get(reverse("review-list"))
+
+        self.assertEqual(response.status_code, 200)
+
+        returned = [row["id"] for row in response.data["results"]] \
+            if isinstance(response.data, dict) \
+            else [row["id"] for row in response.data]
+
+        self.assertIn(self.owner_review.id, returned)
+        self.assertNotIn(self.intruder_review.id, returned)
+
+    def test_review_detail_hides_other_users_reviews(self):
+        self.client.force_login(self.owner)
+
+        response = self.client.get(
+            reverse(
+                "review-detail",
+                args=[self.intruder_review.id],
+            )
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_review_detail_allows_owner(self):
+        self.client.force_login(self.owner)
+
+        response = self.client.get(
+            reverse("review-detail", args=[self.owner_review.id])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data["summary"],
+            "Owner summary",
+        )
+
+    def test_pull_request_review_get_hides_other_users_pull_requests(self):
+        self.client.force_login(self.owner)
+
+        response = self.client.get(
+            reverse(
+                "pull-request-review",
+                args=[self.intruder_pr.id],
+            )
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_pull_request_review_get_returns_own_findings(self):
+        Finding.objects.create(
+            review=self.owner_review,
+            file_path="mine.py",
+            severity="low",
+            title="Owner finding",
+            description="Fine.",
+        )
+
+        self.client.force_login(self.owner)
+
+        response = self.client.get(
+            reverse("pull-request-review", args=[self.owner_pr.id])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [f["file_path"] for f in response.data["findings"]],
+            ["mine.py"],
+        )
+
+    def test_pull_request_list_only_returns_own_pull_requests(self):
+        self.client.force_login(self.owner)
+
+        with mock.patch(
+            "reviews.serializers.get_oauth_github_client",
+            return_value=mock.Mock(),
+        ):
+            with mock.patch(
+                "reviews.serializers.PullRequestSerializer."
+                "get_latest_commit_sha",
+                return_value=None,
+            ):
+                response = self.client.get(
+                    reverse("pull-request-list")
+                )
+
+        self.assertEqual(response.status_code, 200)
+
+        returned = [row["id"] for row in response.data["results"]] \
+            if isinstance(response.data, dict) \
+            else [row["id"] for row in response.data]
+
+        self.assertEqual(returned, [self.owner_pr.id])
+
+
+class NormalizeScoreTests(TestCase):
+    """
+    Review.score is an IntegerField, so a fractional AI score has to be
+    coerced before it is written to the database.
+    """
+
+    def test_review_score_accepts_ai_output(self):
+        pull_request = PullRequest.objects.create(
+            repository=Repository.objects.create(
+                owner=User.objects.create_user(
+                    username="scorer",
+                    email="scorer@example.com",
+                    password="strong-password-123",
+                ),
+                name="scored-repo",
+                github_url="https://github.com/scorer/scored-repo",
+            ),
+            title="Scored PR",
+            github_pr_number=7,
+            source_branch="feature",
+            target_branch="main",
+        )
+
+        review = Review.objects.create(
+            pull_request=pull_request,
+            commit_sha="c" * 40,
+            status="completed",
+        )
+        review.score = normalize_score(8.6)
+        review.full_clean(exclude=["started_at", "completed_at"])
+        review.save()
+
+        review.refresh_from_db()
+        self.assertEqual(review.score, 9)

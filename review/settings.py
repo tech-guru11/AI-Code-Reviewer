@@ -1,12 +1,35 @@
 import os
+import sys
 
 from dotenv import load_dotenv
 
 from pathlib import Path
 
 import dj_database_url
+
+# Build paths inside the project like this: BASE_DIR / 'subdir'.
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 # Load environment variables from .env file
-load_dotenv()
+#
+# .env.local is loaded first and is git-ignored, so it is the place to put
+# local development overrides. load_dotenv never overwrites a variable that
+# is already in the environment, so values set here take precedence over the
+# ones in .env. Keep real secrets in .env and override only what differs.
+load_dotenv(BASE_DIR / ".env.local")
+load_dotenv(BASE_DIR / ".env")
+
+# The .env file is tuned for deployment, so a developer running the test
+# suite would otherwise inherit production-only settings (for example
+# SECURE_SSL_REDIRECT) and every test request would be answered with a
+# redirect to https. Detect the test runner so the suite stays hermetic.
+# The subcommand is compared exactly so that arguments which merely mention
+# "test" (such as collectstatic --ignore "*/tests/*") do not match.
+TESTING = (
+    sys.argv[1:2] == ["test"]
+    or "pytest" in sys.modules
+    or os.getenv("DJANGO_TESTING", "") == "1"
+)
 
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
@@ -20,15 +43,10 @@ FRONTEND_URL = os.getenv(
     "FRONTEND_URL",
     "http://127.0.0.1:5173/",
 )
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
+
 GITHUB_TOKEN_ENCRYPTION_KEY = os.getenv(
     "GITHUB_TOKEN_ENCRYPTION_KEY"
 )
@@ -46,6 +64,7 @@ ALLOWED_HOSTS = [
 ]
 
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -184,7 +203,9 @@ CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
         "CORS_ALLOWED_ORIGINS",
-        "http://127.0.0.1:5173"
+        # Vite prints localhost:5173 but is also reachable as 127.0.0.1:5173;
+        # the Origin header is compared verbatim, so allow both by default.
+        "http://localhost:5173,http://127.0.0.1:5173"
     ).split(",")
     if origin.strip()
 ]
@@ -268,8 +289,16 @@ CSRF_COOKIE_SECURE = (
 )
 
 SESSION_COOKIE_HTTPONLY = True
+
+if TESTING:
+    # The test client speaks plain HTTP and Django refuses to trust
+    # session cookies that are marked Secure, so relax these for tests.
+    SECURE_SSL_REDIRECT = False
+    SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SECURE = False
+
 # Production security requirements
-if not DEBUG:
+if not DEBUG and not TESTING:
     if not ALLOWED_HOSTS:
         raise RuntimeError(
             "DJANGO_ALLOWED_HOSTS must be configured when DEBUG=False."

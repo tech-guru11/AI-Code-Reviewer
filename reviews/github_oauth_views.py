@@ -1,4 +1,6 @@
+import logging
 import secrets
+
 import requests
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -7,6 +9,9 @@ from django.shortcuts import redirect
 from github_integration.models import GitHubConnection
 from github_integration.crypto import encrypt_github_token
 from reviews.auth_views import get_profile, mask_email
+
+
+logger = logging.getLogger(__name__)
 
 
 def github_connect(request):
@@ -134,19 +139,31 @@ def github_callback(request):
             status=401,
         )
 
-    token_response = requests.post(
-        "https://github.com/login/oauth/access_token",
-        data={
-            "client_id": settings.GITHUB_CLIENT_ID,
-            "client_secret": settings.GITHUB_CLIENT_SECRET,
-            "code": code,
-            "redirect_uri": settings.GITHUB_REDIRECT_URI,
-        },
-        headers={
-            "Accept": "application/json",
-        },
-        timeout=15,
-    )
+    try:
+        token_response = requests.post(
+            "https://github.com/login/oauth/access_token",
+            data={
+                "client_id": settings.GITHUB_CLIENT_ID,
+                "client_secret": settings.GITHUB_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": settings.GITHUB_REDIRECT_URI,
+            },
+            headers={
+                "Accept": "application/json",
+            },
+            timeout=15,
+        )
+    except requests.RequestException:
+        logger.exception(
+            "Failed to reach GitHub to exchange the OAuth code."
+        )
+
+        return JsonResponse(
+            {
+                "error": "Could not reach GitHub. Please try again."
+            },
+            status=502,
+        )
 
     if token_response.status_code != 200:
         return JsonResponse(
@@ -173,14 +190,33 @@ def github_callback(request):
             status=400,
         )
 
-    github_user_response = requests.get(
-        "https://api.github.com/user",
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Accept": "application/vnd.github+json",
-        },
-        timeout=15,
-    )
+    try:
+        github_user_response = requests.get(
+            "https://api.github.com/user",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/vnd.github+json",
+            },
+            timeout=15,
+        )
+
+        email_response = requests.get(
+            "https://api.github.com/user/emails",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/vnd.github+json",
+            },
+            timeout=15,
+        )
+    except requests.RequestException:
+        logger.exception(
+            "Failed to reach the GitHub API during OAuth callback."
+        )
+
+        return JsonResponse(
+            {"error": "Could not reach GitHub. Please try again."},
+            status=502,
+        )
 
     if github_user_response.status_code != 200:
         return JsonResponse(
@@ -198,15 +234,6 @@ def github_callback(request):
             {"error": "Invalid GitHub user information."},
             status=400,
         )
-
-    email_response = requests.get(
-        "https://api.github.com/user/emails",
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Accept": "application/vnd.github+json",
-        },
-        timeout=15,
-    )
 
     if email_response.status_code != 200:
         return JsonResponse(
@@ -278,9 +305,6 @@ def github_callback(request):
             "access_token": encrypt_github_token(access_token),
         },
     )
-
-    request.session.pop("github_oauth_state", None)
-    request.session.pop("github_oauth_user_id", None)
 
     frontend_url = settings.FRONTEND_URL
 

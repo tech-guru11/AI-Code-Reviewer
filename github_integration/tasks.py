@@ -3,24 +3,65 @@ import json
 import logging
 
 from celery import shared_task
-from openai import OpenAI, files
+from openai import OpenAI
 from django.utils import timezone
-from github import Github, GithubException
-from .models import PullRequestReview
-from reviews.models import Repository, PullRequest, Review, Finding
+from reviews.models import PullRequest, Review, Finding
 from .github_service import (
     GitHubAppService,
-    sync_pull_request_files,
-    sync_pull_request_commits,
+    get_registered_repository,
     sync_single_pull_request_to_db,
 )
 
 logger = logging.getLogger(__name__)
-# Initialize the Groq client
-client = OpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=os.environ.get("GROQ_API_KEY"),
-)
+
+_ai_client = None
+
+
+def get_ai_client() -> OpenAI:
+    """
+    Build the Groq client lazily.
+
+    Constructing the OpenAI client at import time raises when GROQ_API_KEY
+    is missing, which would stop Django and Celery from starting at all.
+    """
+    global _ai_client
+
+    if _ai_client is None:
+        api_key = os.environ.get("GROQ_API_KEY")
+
+        if not api_key:
+            raise RuntimeError("GROQ_API_KEY is not configured.")
+
+        _ai_client = OpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=api_key,
+        )
+
+    return _ai_client
+
+
+def normalize_score(value):
+    """
+    Coerce an AI-supplied score into the 0-10 integer that
+    Review.score expects.
+
+    The model uses an IntegerField, so a fractional score such as 7.5
+    is rejected outright by MariaDB and PostgreSQL.
+    """
+    if value is None:
+        return None
+
+    try:
+        score = int(round(float(value)))
+    except (TypeError, ValueError):
+        logger.warning(
+            "Discarding non-numeric review score: %r", value
+        )
+        return None
+
+    return max(0, min(10, score))
+
+
 @shared_task
 def process_github_event(event_type, payload):
     """
@@ -70,10 +111,9 @@ def process_github_event(event_type, payload):
         }
 
     try:
-        # Find the Django PullRequest record
-        repository = Repository.objects.get(
-             github_url=f"https://github.com/{repo_full_name}"
-    )
+        # Confirm the repository is registered before spending GitHub API
+        # calls on it. This raises DoesNotExist when nobody registered it.
+        repository = get_registered_repository(repo_full_name)
 
         logger.info(
             f"Repository found in database: "
@@ -82,6 +122,7 @@ def process_github_event(event_type, payload):
         pull_request = sync_single_pull_request_to_db(
             repo_full_name,
             pr_number,
+            user=repository.owner,
         )
 
         logger.info(
@@ -239,7 +280,7 @@ def process_manual_review(
                 pull_request.github_pr_number
             )
 
-        except Exception as github_error:
+        except Exception:
             logger.exception(
                 "GitHub API request failed for PullRequest ID %s.",
                 pull_request_id,
@@ -270,13 +311,10 @@ def process_manual_review(
         logger.info(
             f"Target branch: {github_pr.base.ref}"
         )
-                # 5. Get changed files
+        # 5. Get changed files
         try:
-            files = github_pr.get_files()
-            logger.info(
-                f"GitHub reports {files.totalCount} changed files."
-            )
-        except Exception as files_error:
+            pr_files = github_pr.get_files()
+        except Exception:
             logger.exception(
                 "Failed to retrieve changed files for PullRequest ID %s.",
                 pull_request_id,
@@ -292,15 +330,25 @@ def process_manual_review(
                 "error": "Failed to retrieve changed files from GitHub.",
             }
 
+        # get_files() returns a PaginatedList, but don't assume it: a plain
+        # list or a short response must not be reported as a retrieval failure.
+        file_count = getattr(pr_files, "totalCount", None)
+        if file_count is None:
+            file_count = len(pr_files)
+        logger.info(
+            "GitHub reports %s changed files.",
+            file_count,
+        )
+
         changed_files = []
 
-        for file in files:
-            logger.debug("Changed file: %s", file.filename)
-            logger.debug("File status: %s", file.status)
-            logger.debug("File additions: %s", file.additions)
-            logger.debug("File deletions: %s", file.deletions)
-            logger.debug("Patch available: %s", bool(file.patch))
-            logger.debug("File extension: %s", file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "none")
+        for gh_file in pr_files:
+            logger.debug("Changed file: %s", gh_file.filename)
+            logger.debug("File status: %s", gh_file.status)
+            logger.debug("File additions: %s", gh_file.additions)
+            logger.debug("File deletions: %s", gh_file.deletions)
+            logger.debug("Patch available: %s", bool(gh_file.patch))
+            logger.debug("File extension: %s", gh_file.filename.rsplit(".", 1)[-1].lower() if "." in gh_file.filename else "none")
 
             code_extensions = {
                 ".py",
@@ -325,23 +373,23 @@ def process_manual_review(
 
             extension = ""
 
-            if "." in file.filename:
-                extension = "." + file.filename.split(".")[-1].lower()
+            if "." in gh_file.filename:
+                extension = "." + gh_file.filename.split(".")[-1].lower()
 
             if extension not in code_extensions:
                 logger.info(
-                    f"Skipping non-code file: {file.filename}"
+                    f"Skipping non-code file: {gh_file.filename}"
                 )
                 continue
 
 
             changed_files.append({
-                "filename": file.filename,
-                "status": file.status,
-                "additions": file.additions,
-                "deletions": file.deletions,
-                "changes": file.changes,
-                "patch": file.patch or "",
+                "filename": gh_file.filename,
+                "status": gh_file.status,
+                "additions": gh_file.additions,
+                "deletions": gh_file.deletions,
+                "changes": gh_file.changes,
+                "patch": gh_file.patch or "",
             })
 
         logger.info(
@@ -369,7 +417,7 @@ Patch:
                 # 7. Send code to Groq AI
         logger.info("Sending code to Groq AI...")
 
-        response = client.chat.completions.create(
+        response = get_ai_client().chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=[
                 {
@@ -526,9 +574,15 @@ Rules:
             "summary",
             "No summary provided."
         )
-        review.score = parsed_review.get("score")
+        review.score = normalize_score(
+            parsed_review.get("score")
+        )
         review.completed_at = timezone.now()
         review.save()
+
+        # A previous attempt may have stored findings before failing, so
+        # replace them instead of appending duplicates.
+        review.findings.all().delete()
 
         logger.info(
             f"Review saved to database. Review ID: {review.id}"
@@ -616,7 +670,7 @@ Rules:
 
         comment_body += (
             f"**Score:** "
-            f"{parsed_review.get('score', 'N/A')}/10\n\n"
+            f"{review.score if review.score is not None else 'N/A'}/10\n\n"
         )
 
         comment_body += (
@@ -736,7 +790,7 @@ Rules:
         logger.info(
             "AI review completed for Review ID %s with score %s/10.",
             review.id,
-            parsed_review.get("score"),
+            review.score,
         )
 
         logger.info(
