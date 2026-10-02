@@ -125,10 +125,19 @@ class RegisterView(APIView):
             )
 
         try:
-            validate_password(password, user=None)
+            # UserAttributeSimilarityValidator compares the password against
+            # the username, email and names. Passing None made it a no-op, so
+            # a password derived from the username was accepted. Validate
+            # against an unsaved instance carrying the submitted values.
+            validate_password(
+                password,
+                user=User(username=username, email=email),
+            )
         except ValidationError as error:
+            # Every other branch in this module returns "error" as a string,
+            # so join the messages instead of leaking a bare list.
             return Response(
-                {"error": error.messages},
+                {"error": " ".join(error.messages)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
