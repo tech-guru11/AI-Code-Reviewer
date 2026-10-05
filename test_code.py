@@ -14,7 +14,12 @@ def login(username, password):
 
 def get_user(user_id):
     query = "SELECT * FROM users WHERE id=" + user_id
-    return query
+    risk = calculate_pr_risk(
+    changed_files=files,
+    additions=pr.additions,
+    deletions=pr.deletions,
+    diff=diff,
+)return query
 def test_function():
     print("hello")
 def hello():
