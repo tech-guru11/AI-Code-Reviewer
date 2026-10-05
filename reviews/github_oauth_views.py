@@ -1,6 +1,5 @@
 import logging
 import secrets
-
 import requests
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -235,36 +234,67 @@ def github_callback(request):
             status=400,
         )
 
-    if email_response.status_code != 200:
-        return JsonResponse(
-            {
-                "error": "Failed to retrieve the GitHub account email.",
-            },
-            status=400,
+    account_email = (user.email or "").strip().lower()
+
+    github_email = ""
+    github_email_verified = False
+
+    if email_response.status_code == 200:
+        emails = email_response.json()
+
+        if emails:
+            primary_email = next(
+                (item for item in emails if item.get("primary")),
+                emails[0],
+            )
+
+            github_email = (
+                primary_email.get("email") or ""
+            ).strip().lower()
+
+            github_email_verified = (
+                primary_email.get("verified") is True
+            )
+        else:
+            logger.warning(
+                "GitHub returned an empty email list for the "
+                "connected account."
+            )
+    else:
+        # A GitHub App can only read /user/emails when its "Email
+        # addresses: read-only" account permission was granted. When it
+        # was not, GitHub answers /user/emails with 403 while /user
+        # still succeeds, so fall back to the address on the user
+        # payload rather than refusing a working connection.
+        logger.warning(
+            "GitHub /user/emails failed (status=%s, body=%s). "
+            "Falling back to the public email on /user.",
+            email_response.status_code,
+            email_response.text[:200],
         )
 
-    emails = email_response.json()
+        github_email = (
+            github_user.get("email") or ""
+        ).strip().lower()
 
-    if not emails:
+        # GitHub only publishes the address on /user once it has been
+        # verified, so treat a non-empty value as verified.
+        github_email_verified = bool(github_email)
+
+    if not github_email:
         return JsonResponse(
             {
                 "error": (
                     "No email found on the GitHub account. "
-                    "Add an email to your GitHub profile first."
+                    "Add a verified email to your GitHub profile and "
+                    'make sure the GitHub App has the "Email '
+                    'addresses: read-only" account permission.'
                 ),
             },
             status=400,
         )
 
-    primary_email = next(
-        (item for item in emails if item.get("primary")),
-        emails[0],
-    )
-
-    github_email = (primary_email.get("email") or "").strip().lower()
-    account_email = (user.email or "").strip().lower()
-
-    if primary_email.get("verified") is not True:
+    if not github_email_verified:
         return JsonResponse(
             {
                 "error": (

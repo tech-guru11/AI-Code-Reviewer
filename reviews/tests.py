@@ -5,6 +5,7 @@ from django.urls import reverse
 from unittest import mock
 from rest_framework.test import APIClient
 
+from github_integration.models import GitHubConnection
 from github_integration.tasks import normalize_score
 from reviews.models import (
     EmailVerificationCode,
@@ -279,6 +280,93 @@ class GitHubCallbackEmailCheckTests(TestCase):
         ), mock.patch(
             "reviews.github_oauth_views.requests.get",
             side_effect=[github_user_resp, emails_resp],
+        )
+
+    def _mock_forbidden_emails(self, public_email):
+        """
+        GitHub answers /user/emails with 403 when the app was never
+        granted the "Email addresses: read-only" permission, while
+        /user still returns the public address.
+        """
+
+        token_resp = mock.Mock()
+        token_resp.status_code = 200
+        token_resp.json.return_value = {
+            "access_token": "test-token",
+        }
+
+        github_user_resp = mock.Mock()
+        github_user_resp.status_code = 200
+        github_user_resp.json.return_value = {
+            "id": 12345,
+            "login": "carol-gh",
+            "email": public_email,
+        }
+
+        emails_resp = mock.Mock()
+        emails_resp.status_code = 403
+        emails_resp.text = (
+            '{"message":"Resource not accessible by integration"}'
+        )
+        emails_resp.json.return_value = {
+            "message": "Resource not accessible by integration",
+        }
+
+        return mock.patch(
+            "reviews.github_oauth_views.requests.post",
+            return_value=token_resp,
+        ), mock.patch(
+            "reviews.github_oauth_views.requests.get",
+            side_effect=[github_user_resp, emails_resp],
+        )
+
+    def test_callback_falls_back_to_public_email_when_scope_denied(self):
+        patch_post, patch_get = self._mock_forbidden_emails(
+            "carol@example.com"
+        )
+
+        with patch_post, patch_get:
+            response = self.client.get(
+                reverse("github-callback"),
+                {"code": "abc", "state": "test-state"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+
+        connection = GitHubConnection.objects.get(user=self.user)
+
+        self.assertEqual(connection.github_username, "carol-gh")
+
+    def test_callback_rejects_mismatch_on_public_email_fallback(self):
+        patch_post, patch_get = self._mock_forbidden_emails(
+            "someone-else@example.com"
+        )
+
+        with patch_post, patch_get:
+            response = self.client.get(
+                reverse("github-callback"),
+                {"code": "abc", "state": "test-state"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(
+            "does not match",
+            response.json()["error"],
+        )
+
+    def test_callback_rejects_when_no_email_available(self):
+        patch_post, patch_get = self._mock_forbidden_emails(None)
+
+        with patch_post, patch_get:
+            response = self.client.get(
+                reverse("github-callback"),
+                {"code": "abc", "state": "test-state"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(
+            "No email found",
+            response.json()["error"],
         )
 
     def test_callback_rejects_email_mismatch(self):
